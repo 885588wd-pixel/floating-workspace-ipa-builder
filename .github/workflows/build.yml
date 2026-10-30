@@ -1,0 +1,54 @@
+name: Build unsigned Floating Workspace IPA
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: floating-workspace-one-build
+  cancel-in-progress: false
+jobs:
+  build-iphone:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout encrypted source package
+        uses: actions/checkout@v4
+      - name: Decrypt source on macOS runner
+        shell: bash
+        env:
+          SOURCE_ARCHIVE_KEY: ${{ secrets.SOURCE_ARCHIVE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$SOURCE_ARCHIVE_KEY"
+          base64 -D < source-archive.enc.b64 | openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:SOURCE_ARCHIVE_KEY | tar -xz
+          test -f FloatingWorkspace.xcodeproj/project.pbxproj
+          test -f Sources/FloatingWorkspace/App/FloatingWorkspaceApp.swift
+      - name: Compile for physical iPhone without signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcodebuild -project FloatingWorkspace.xcodeproj \
+            -scheme FloatingWorkspace -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' build
+      - name: Package real unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/FloatingWorkspace.app"
+          test -d "$app"
+          test -x "$app/FloatingWorkspace"
+          mkdir -p "$RUNNER_TEMP/unsigned/Payload" out
+          ditto "$app" "$RUNNER_TEMP/unsigned/Payload/FloatingWorkspace.app"
+          (cd "$RUNNER_TEMP/unsigned" && zip -q -r "$GITHUB_WORKSPACE/out/FloatingWorkspace-unsigned.ipa" Payload)
+          unzip -t out/FloatingWorkspace-unsigned.ipa | tail -1
+      - name: Upload IPA file
+        uses: actions/upload-artifact@v4
+        with:
+          name: FloatingWorkspace-unsigned-IPA
+          path: out/FloatingWorkspace-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 1
